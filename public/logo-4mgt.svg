@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" fill="none">
+  <!-- 4MGT logo: red flag with bottom-right diagonal cut, white "4", white "M", red superscript "GT" -->
+  <path d="M16 24 H96 V110.4 L81.6 136 H16 Z" fill="#CD171E"/>
+  <text x="56" y="106" text-anchor="middle" font-family="Archivo, 'Arial Black', sans-serif" font-weight="900" font-size="84" fill="#FFFFFF">4</text>
+  <text x="112" y="136" font-family="Archivo, 'Arial Black', sans-serif" font-weight="900" font-stretch="expanded" font-size="96" fill="#FFFFFF">M</text>
+  <text x="196" y="76" font-family="Archivo, 'Arial Black', sans-serif" font-weight="800" font-size="34" fill="#CD171E">GT</text>
+</svg>
