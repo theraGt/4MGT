@@ -1,5 +1,12 @@
 import { createRouter, createWebHistory } from '@ionic/vue-router'
-import type { RouteRecordRaw } from 'vue-router'
+import type { RouteLocationNormalized, RouteRecordRaw } from 'vue-router'
+import { initAuth, isAuthenticated } from '../stores/auth'
+
+declare module 'vue-router' {
+  interface RouteMeta {
+    requiresAuth?: boolean
+  }
+}
 
 const routes: RouteRecordRaw[] = [
   { path: '/', name: 'home', component: () => import('../views/Home.vue') },
@@ -19,6 +26,17 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
+})
+
+router.beforeEach((to: RouteLocationNormalized) => {
+  initAuth()
+  if (to.meta.requiresAuth && !isAuthenticated.value) {
+    return { name: 'login' }
+  }
+  if (to.name === 'login' && isAuthenticated.value) {
+    return { name: 'home' }
+  }
+  return true
 })
 
 export default router

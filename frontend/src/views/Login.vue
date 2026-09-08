@@ -5,6 +5,9 @@ import { useRouter } from 'vue-router'
 import { IonIcon, IonPage } from '@ionic/vue'
 import { arrowBackOutline, checkmarkOutline, eyeOffOutline, eyeOutline } from 'ionicons/icons'
 import gsap from 'gsap'
+import { authApi } from '../services/auth'
+import { ApiError } from '../services/api'
+import { setSession } from '../stores/auth'
 import FlagMark from '../components/FlagMark.vue'
 import GlassField from '../components/login/GlassField.vue'
 import EmberBurst from '../components/login/EmberBurst.vue'
@@ -20,7 +23,7 @@ const EmberField = defineAsyncComponent(() => import('../components/EmberField.v
  * (Framer Motion springs → springs manuales en rAF + GSAP).
  */
 
-type Phase = 'idle' | 'loading' | 'charging' | 'burst' | 'success' | 'error'
+type Phase = 'idle' | 'loading' | 'charging' | 'burst' | 'success' | 'code' | 'error'
 
 function useMedia(query: string): Ref<boolean> {
   const matches = ref(typeof window !== 'undefined' && window.matchMedia(query).matches)
@@ -60,8 +63,14 @@ const email = ref('')
 const password = ref('')
 const showPassword = ref(false)
 const remember = ref(true)
-const errors = ref<{ email?: string; password?: string }>({})
+const errors = ref<{ email?: string; password?: string; code?: string }>({})
 const burstKey = ref(0)
+const loginUserId = ref<number | null>(null)
+const loginToken = ref('')
+const formError = ref('')
+const codeNote = ref('')
+const resending = ref(false)
+const verifying = ref(false)
 
 const busy = computed(() => phase.value !== 'idle' && phase.value !== 'error')
 
@@ -354,12 +363,13 @@ function shake(amp: number, duration: number) {
   })
 }
 
-function onSubmit() {
+async function onSubmit() {
   if (busy.value) return
   const next: { email?: string; password?: string } = {}
   if (!/\S+@\S+\.\S+/.test(email.value)) next.email = 'Ingresa un correo válido.'
   if (password.value.length < 4) next.password = 'Mínimo 4 caracteres.'
   errors.value = next
+  formError.value = ''
   if (next.email || next.password) {
     phase.value = 'error' // shake horizontal ±8px, 0.4s
     shake(8, 0.4)
@@ -368,65 +378,153 @@ function onSubmit() {
     }, 450)
     return
   }
-  // Secuencia coreografiada de éxito
+  // Autenticación real contra el API
   phase.value = 'loading'
   curX.value = 0 // 1) el tilt se endereza
   curY.value = 0
+  try {
+    const result = await authApi.login(email.value, password.value)
+
+    if (result.requires2FA && result.userId) {
+      loginUserId.value = result.userId
+      loginToken.value = ''
+      codeNote.value = ''
+      phase.value = 'code'
+      return
+    }
+
+    if (result.token && result.user) {
+      setSession(result.token, result.user, remember.value)
+      runSuccessChoreography()
+    }
+  } catch (err) {
+    showAuthError(err)
+  }
+}
+
+function runSuccessChoreography() {
+  phase.value = 'charging' // 2) carga de energía: shake sutil + glow creciente
+  ctx?.add(() => {
+    gsap.to(glowState, {
+      v: 1,
+      duration: 0.35,
+      ease: 'power2.out',
+      onUpdate: () => {
+        glowV.value = glowState.v
+      },
+    })
+  })
+  shake(2, 0.3)
   later(() => {
-    phase.value = 'charging' // 2) carga de energía: shake sutil + glow creciente
+    phase.value = 'burst' // 3) explosión de brasas + scale 0.96 → 1 con flash
+    burstKey.value += 1
     ctx?.add(() => {
       gsap.to(glowState, {
-        v: 1,
-        duration: 0.35,
+        v: 0.35,
+        duration: 0.6,
         ease: 'power2.out',
         onUpdate: () => {
           glowV.value = glowState.v
         },
       })
+      const el = choreoEl.value
+      if (el && !reduced.value) {
+        gsap.to(el, { keyframes: { scale: [1, 0.96, 1] }, duration: 0.5, ease: 'power1.inOut' })
+      }
     })
-    shake(2, 0.3)
     later(() => {
-      phase.value = 'burst' // 3) explosión de brasas + scale 0.96 → 1 con flash
-      burstKey.value += 1
-      ctx?.add(() => {
-        gsap.to(glowState, {
-          v: 0.35,
-          duration: 0.6,
-          ease: 'power2.out',
-          onUpdate: () => {
-            glowV.value = glowState.v
-          },
-        })
-        const el = choreoEl.value
-        if (el && !reduced.value) {
-          gsap.to(el, { keyframes: { scale: [1, 0.96, 1] }, duration: 0.5, ease: 'power1.inOut' })
-        }
-      })
-      later(() => {
-        phase.value = 'success' // 4) crossfade a panel de éxito + bandera plantándose
-        if (reduced.value) {
-          sFlagY.v.value = 0
-          sFlagRot.v.value = 0
-          sFlagS.v.value = 1
-          sFlagO.v.value = 1
-        } else {
-          sFlagY.v.value = -90
-          sFlagY.vel = 0
-          sFlagRot.v.value = -12
-          sFlagRot.vel = 0
-          sFlagS.v.value = 1.15
-          sFlagS.vel = 0
-          sFlagO.v.value = 0
-          sFlagO.vel = 0
-          sFlagY.target = 0
-          sFlagRot.target = 0
-          sFlagS.target = 1
-          sFlagO.target = 1
-        }
-        later(() => router.push('/'), 1700) // barra 1.5s → redirige
-      }, 480)
-    }, 320)
-  }, 1200)
+      phase.value = 'success' // 4) crossfade a panel de éxito + bandera plantándose
+      if (reduced.value) {
+        sFlagY.v.value = 0
+        sFlagRot.v.value = 0
+        sFlagS.v.value = 1
+        sFlagO.v.value = 1
+      } else {
+        sFlagY.v.value = -90
+        sFlagY.vel = 0
+        sFlagRot.v.value = -12
+        sFlagRot.vel = 0
+        sFlagS.v.value = 1.15
+        sFlagS.vel = 0
+        sFlagO.v.value = 0
+        sFlagO.vel = 0
+        sFlagY.target = 0
+        sFlagRot.target = 0
+        sFlagS.target = 1
+        sFlagO.target = 1
+      }
+      later(() => router.push('/'), 1700) // barra 1.5s → redirige
+    }, 480)
+  }, 320)
+}
+
+function showAuthError(err: unknown) {
+  const msg = err instanceof ApiError ? err.message : 'Error del servidor. Intenta de nuevo.'
+  formError.value = msg
+  phase.value = 'error'
+  shake(8, 0.4)
+  later(() => {
+    phase.value = 'idle'
+    formError.value = ''
+  }, 450)
+}
+
+async function verifyCode() {
+  if (phase.value !== 'code' || verifying.value) return
+  if (!loginUserId.value || !loginToken.value.trim()) {
+    errors.value = { code: 'Ingresa el código de 6 dígitos.' }
+    return
+  }
+  verifying.value = true
+  errors.value = { code: undefined }
+  formError.value = ''
+  try {
+    const result = await authApi.verifyLogin(loginUserId.value, loginToken.value.trim())
+    setSession(result.token, result.user, remember.value)
+    loginToken.value = ''
+    runSuccessChoreography()
+  } catch (err) {
+    showAuthError(err)
+  } finally {
+    verifying.value = false
+  }
+}
+
+async function resendCode() {
+  if (resending.value) return
+  resending.value = true
+  formError.value = ''
+  codeNote.value = ''
+  try {
+    const result = await authApi.login(email.value, password.value)
+    if (result.requires2FA && result.userId) {
+      loginUserId.value = result.userId
+      loginToken.value = ''
+      codeNote.value = 'Código reenviado. Revisa tu correo.'
+    }
+  } catch (err) {
+    showAuthError(err)
+  } finally {
+    resending.value = false
+  }
+}
+
+function backToLogin() {
+  phase.value = 'idle'
+  loginToken.value = ''
+  codeNote.value = ''
+  formError.value = ''
+  errors.value = { code: undefined }
+  curX.value = 0
+  curY.value = 0
+}
+
+function maskEmail(value: string) {
+  const idx = value.indexOf('@')
+  if (idx <= 0) return value
+  const head = value.slice(0, 2)
+  const mask = '•'.repeat(Math.max(2, idx - 2))
+  return `${head}${mask}${value.slice(idx)}`
 }
 
 function onEmail(v: string) {
@@ -436,6 +534,10 @@ function onEmail(v: string) {
 function onPassword(v: string) {
   password.value = v
   errors.value = { ...errors.value, password: undefined }
+}
+function onLoginToken(v: string) {
+  loginToken.value = v.replace(/\s/g, '').slice(0, 6).toUpperCase()
+  errors.value = { ...errors.value, code: undefined }
 }
 </script>
 
@@ -573,8 +675,8 @@ function onPassword(v: string) {
                 <div
                   class="flex h-full flex-col transition-opacity duration-[350ms]"
                   :style="{
-                    opacity: phase === 'success' ? 0 : 1,
-                    pointerEvents: phase === 'success' ? 'none' : 'auto',
+                    opacity: phase === 'success' || phase === 'code' ? 0 : 1,
+                    pointerEvents: phase === 'success' || phase === 'code' ? 'none' : 'auto',
                   }"
                 >
                   <div class="login-reveal">
@@ -651,6 +753,9 @@ function onPassword(v: string) {
                     </div>
 
                     <div class="login-reveal">
+                      <p v-if="formError" class="mb-3 text-xs text-brand-red" role="alert">
+                        {{ formError }}
+                      </p>
                       <button
                         type="submit"
                         :disabled="busy"
@@ -683,9 +788,65 @@ function onPassword(v: string) {
                     >
                       ¿Aún no eres parte? <span class="text-brand-red">Únete al movimiento</span>
                     </router-link>
-                    <p class="text-center text-[0.6875rem] leading-relaxed text-brand-muted/80">
-                      Demo visual — la autenticación real se gestiona en la plataforma 4MGT.
+                  </div>
+                </div>
+
+                <!-- ---------- Panel de código 2FA (crossfade) ---------- -->
+                <div
+                  v-if="phase === 'code'"
+                  class="login-codepanel absolute inset-0 flex flex-col justify-center gap-4 px-2 sm:px-6"
+                >
+                  <div class="text-center">
+                    <p class="overline text-brand-red">Verificación</p>
+                    <h2 class="h3-display mt-1 text-white">Código de acceso</h2>
+                    <p class="mt-1 text-sm text-brand-muted">
+                      Enviamos un código de 6 dígitos a {{ maskEmail(email) }}.
                     </p>
+                  </div>
+
+                  <GlassField
+                    id="login-code"
+                    label="Código de 6 dígitos"
+                    type="text"
+                    auto-complete="one-time-code"
+                    :model-value="loginToken"
+                    :error="errors.code"
+                    :reduced="reduced"
+                    @update:model-value="onLoginToken"
+                  />
+
+                  <p
+                    v-if="codeNote"
+                    class="text-center text-xs text-brand-muted"
+                    role="status"
+                  >
+                    {{ codeNote }}
+                  </p>
+
+                  <div class="flex flex-col gap-2.5">
+                    <button
+                      type="button"
+                      :disabled="verifying"
+                      class="clip-cut inline-flex w-full items-center justify-center gap-2.5 bg-brand-red px-8 py-4 font-display text-sm font-bold uppercase tracking-[0.15em] text-white transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_8px_32px_rgba(205,23,30,0.5)] hover:[clip-path:var(--cut-deep)] disabled:cursor-wait"
+                      @click="verifyCode"
+                    >
+                      {{ verifying ? 'Verificando…' : 'Verificar y entrar' }}
+                    </button>
+                    <button
+                      type="button"
+                      :disabled="resending"
+                      class="inline-flex w-full items-center justify-center gap-2 px-8 py-3 font-display text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-white/60 transition-colors duration-200 hover:text-brand-red disabled:cursor-wait"
+                      @click="resendCode"
+                    >
+                      {{ resending ? 'Enviando…' : 'Reenviar código' }}
+                    </button>
+                    <button
+                      type="button"
+                      class="inline-flex w-full items-center justify-center gap-1 px-8 py-2 font-display text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-white/40 transition-colors duration-200 hover:text-white"
+                      @click="backToLogin"
+                    >
+                      ← Volver a ingresar
+                    </button>
                   </div>
                 </div>
 
@@ -843,6 +1004,10 @@ function onPassword(v: string) {
 }
 /* Panel de éxito: fade in con delay 0.15s */
 .login-success-panel {
+  animation: login-fade-in 0.35s ease 0.15s both;
+}
+/* Panel de código 2FA: fade in con delay 0.15s */
+.login-codepanel {
   animation: login-fade-in 0.35s ease 0.15s both;
 }
 @keyframes login-fade-in {
